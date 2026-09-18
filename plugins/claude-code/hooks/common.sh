@@ -36,6 +36,10 @@ else
 fi
 case "$_PROJECT_DIR" in
   /*) ;;
+  # Windows: CLAUDE_PROJECT_DIR arrives as a Win32 drive path (C:/... or C:\...).
+  # Git Bash treats it as absolute, so keep it as-is; the `git -C` below
+  # normalizes it to C:/..., matching the collection hash of earlier releases.
+  [A-Za-z]:[/\\]*) ;;
   *) _PROJECT_DIR="$(pwd)/$_PROJECT_DIR" ;;
 esac
 _GIT_ROOT="$(git -C "$_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")"

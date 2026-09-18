@@ -273,6 +273,10 @@ fi
 
 case "$PROJECT_DIR" in
   /*) ;;
+  # Windows: the hook cwd arrives as a Win32 drive path (C:/... or C:\...).
+  # Git Bash treats it as absolute, so keep it as-is; the `git -C` below
+  # normalizes it to C:/..., matching the collection hash of earlier releases.
+  [A-Za-z]:[/\\]*) ;;
   *) PROJECT_DIR="$(pwd)/$PROJECT_DIR" ;;
 esac
 
