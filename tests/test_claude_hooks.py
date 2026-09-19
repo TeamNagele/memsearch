@@ -2239,3 +2239,51 @@ def test_plugin_common_keeps_win32_project_dir_absolute(
     assert expected[0] == f"{git_root}/.memsearch"
     assert resolve(str(repo).replace("\\", separator)) == expected
     assert sorted(entry.name for entry in repo.iterdir()) == [".git", ".memsearch"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 drive paths only reach the hooks under Git Bash on Windows")
+@pytest.mark.parametrize(
+    ("common_sh", "project_dir_var"),
+    [(COMMON_SHS[0], "CLAUDE_PROJECT_DIR"), (COMMON_SHS[1], "MEMSEARCH_PROJECT_DIR")],
+    ids=PLUGIN_IDS,
+)
+def test_plugin_common_win32_project_dir_outside_git_repo(
+    tmp_path: Path, common_sh: str, project_dir_var: str
+) -> None:
+    """Fallback branch of #752: a Win32 project dir that is not a git repo.
+
+    With no git root to normalize the path, the hook has to keep the host
+    path itself. Both drive-path spellings must land on the same
+    ``C:/.../.memsearch`` and the same collection name, and nothing may be
+    created under the hook's cwd (an unrelated repository here).
+    """
+    project = tmp_path / "workspace"
+    project.mkdir()
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(other_repo)], check=True)
+
+    probe = 'source "$1" </dev/null; ensure_memory_dir; printf "%s\n%s\n" "$MEMSEARCH_DIR" "$COLLECTION_NAME"'
+    common_sh_abs = Path(common_sh).resolve().as_posix()
+
+    def resolve(project_dir: str) -> list[str]:
+        env = {**os.environ, "HOME": str(tmp_path / "home"), "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+        for name in ("MEMSEARCH_DIR", "CLAUDE_PROJECT_DIR", "MEMSEARCH_PROJECT_DIR"):
+            env.pop(name, None)
+        env[project_dir_var] = project_dir
+        result = subprocess.run(
+            ["bash", "-c", probe, "bash", common_sh_abs],
+            cwd=other_repo,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        return result.stdout.splitlines()
+
+    slash = resolve(project.as_posix())
+    assert slash[0] == f"{project.as_posix()}/.memsearch"
+    assert slash[1]
+    assert resolve(str(project)) == slash
+    assert sorted(entry.name for entry in project.iterdir()) == [".memsearch"]
+    assert sorted(entry.name for entry in other_repo.iterdir()) == [".git"]
