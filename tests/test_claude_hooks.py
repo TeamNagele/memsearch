@@ -2220,7 +2220,7 @@ def test_plugin_common_keeps_win32_project_dir_absolute(
     common_sh_abs = Path(common_sh).resolve().as_posix()
 
     def resolve(project_dir: str | None) -> list[str]:
-        env = {**os.environ, "HOME": str(tmp_path / "home")}
+        env = {**os.environ, "HOME": str(tmp_path / "home"), "MEMSEARCH_DISABLE": ""}
         for name in ("MEMSEARCH_DIR", "CLAUDE_PROJECT_DIR", "MEMSEARCH_PROJECT_DIR"):
             env.pop(name, None)
         if project_dir is not None:
@@ -2247,9 +2247,7 @@ def test_plugin_common_keeps_win32_project_dir_absolute(
     [(COMMON_SHS[0], "CLAUDE_PROJECT_DIR"), (COMMON_SHS[1], "MEMSEARCH_PROJECT_DIR")],
     ids=PLUGIN_IDS,
 )
-def test_plugin_common_win32_project_dir_outside_git_repo(
-    tmp_path: Path, common_sh: str, project_dir_var: str
-) -> None:
+def test_plugin_common_win32_project_dir_outside_git_repo(tmp_path: Path, common_sh: str, project_dir_var: str) -> None:
     """Fallback branch of #752: a Win32 project dir that is not a git repo.
 
     With no git root to normalize the path, the hook has to keep the host
@@ -2267,7 +2265,12 @@ def test_plugin_common_win32_project_dir_outside_git_repo(
     common_sh_abs = Path(common_sh).resolve().as_posix()
 
     def resolve(project_dir: str) -> list[str]:
-        env = {**os.environ, "HOME": str(tmp_path / "home"), "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path / "home"),
+            "GIT_CEILING_DIRECTORIES": str(tmp_path),
+            "MEMSEARCH_DISABLE": "",
+        }
         for name in ("MEMSEARCH_DIR", "CLAUDE_PROJECT_DIR", "MEMSEARCH_PROJECT_DIR"):
             env.pop(name, None)
         env[project_dir_var] = project_dir
@@ -2285,5 +2288,102 @@ def test_plugin_common_win32_project_dir_outside_git_repo(
     assert slash[0] == f"{project.as_posix()}/.memsearch"
     assert slash[1]
     assert resolve(str(project)) == slash
+    assert sorted(entry.name for entry in project.iterdir()) == [".memsearch"]
+    assert sorted(entry.name for entry in other_repo.iterdir()) == [".git"]
+
+
+# The two tests above are skipped outside Windows because the leading `[ -d
+# "$CLAUDE_PROJECT_DIR" ]` guard only accepts a backslash-separated path as an
+# existing directory under Git Bash; POSIX `[ -d ]` never treats `\` as a
+# separator, so a real "C:\repo" can't be built as two directory levels here.
+# The forward-slash spelling has no such requirement — "C:/repo" is a
+# perfectly ordinary two-level POSIX path if a directory literally named
+# "C:" exists — so it can exercise the same case arm on every CI runner.
+@pytest.mark.parametrize(
+    ("common_sh", "project_dir_var"),
+    [(COMMON_SHS[0], "CLAUDE_PROJECT_DIR"), (COMMON_SHS[1], "MEMSEARCH_PROJECT_DIR")],
+    ids=PLUGIN_IDS,
+)
+def test_plugin_common_keeps_win32_project_dir_absolute_posix(
+    tmp_path: Path, common_sh: str, project_dir_var: str
+) -> None:
+    """POSIX-runnable companion to the Win32-only test above (#752, #753).
+
+    A literal directory named ``C:`` makes ``C:/repo`` a path that matches the
+    `[A-Za-z]:[/\\]*` case arm while also being a real, resolvable directory
+    on Linux/macOS, so this runs on every CI job instead of only Windows.
+    """
+    repo = tmp_path / "C:" / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git_root = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    probe = 'source "$1" </dev/null; ensure_memory_dir; printf "%s\\n%s\\n" "$MEMSEARCH_DIR" "$COLLECTION_NAME"'
+    common_sh_abs = Path(common_sh).resolve().as_posix()
+
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "MEMSEARCH_DISABLE": ""}
+    for name in ("MEMSEARCH_DIR", "CLAUDE_PROJECT_DIR", "MEMSEARCH_PROJECT_DIR"):
+        env.pop(name, None)
+    env[project_dir_var] = repo.as_posix()
+    result = subprocess.run(
+        ["bash", "-c", probe, "bash", common_sh_abs],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert result.stdout.splitlines()[0] == f"{git_root}/.memsearch"
+    assert sorted(entry.name for entry in repo.iterdir()) == [".git", ".memsearch"]
+
+
+@pytest.mark.parametrize(
+    ("common_sh", "project_dir_var"),
+    [(COMMON_SHS[0], "CLAUDE_PROJECT_DIR"), (COMMON_SHS[1], "MEMSEARCH_PROJECT_DIR")],
+    ids=PLUGIN_IDS,
+)
+def test_plugin_common_win32_project_dir_outside_git_repo_posix(
+    tmp_path: Path, common_sh: str, project_dir_var: str
+) -> None:
+    """POSIX-runnable companion to the no-git-root Win32 test above (#752).
+
+    Same rationale as ``test_plugin_common_keeps_win32_project_dir_absolute_posix``:
+    a literal ``C:`` directory lets the forward-slash spelling run on every
+    CI runner instead of only Windows.
+    """
+    project = tmp_path / "C:" / "workspace"
+    project.mkdir(parents=True)
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(other_repo)], check=True)
+
+    probe = 'source "$1" </dev/null; ensure_memory_dir; printf "%s\n%s\n" "$MEMSEARCH_DIR" "$COLLECTION_NAME"'
+    common_sh_abs = Path(common_sh).resolve().as_posix()
+
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "GIT_CEILING_DIRECTORIES": str(tmp_path),
+        "MEMSEARCH_DISABLE": "",
+    }
+    for name in ("MEMSEARCH_DIR", "CLAUDE_PROJECT_DIR", "MEMSEARCH_PROJECT_DIR"):
+        env.pop(name, None)
+    env[project_dir_var] = project.as_posix()
+    result = subprocess.run(
+        ["bash", "-c", probe, "bash", common_sh_abs],
+        cwd=other_repo,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    lines = result.stdout.splitlines()
+    assert lines[0] == f"{project.as_posix()}/.memsearch"
+    assert lines[1]
     assert sorted(entry.name for entry in project.iterdir()) == [".memsearch"]
     assert sorted(entry.name for entry in other_repo.iterdir()) == [".git"]
